@@ -1,0 +1,31 @@
+# Local dictionary data and archives
+*.db
+*.db-*
+*.db.bak
+*.sqlite
+*.sqlite3
+*.importing
+*.zip
+*.bak
+
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Local credentials, tools and editor state
+.env
+.env.*
+!.env.example
+drivers/
+*.exe
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
