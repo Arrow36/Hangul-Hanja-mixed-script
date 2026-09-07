@@ -25,6 +25,18 @@ A local web app for Hangul–Hanja mixed-script reading, with etymology, diction
 
 转换和词典查询在本地服务中完成，不需要大语言模型 API。首次安装依赖、下载词典及访问在线音频或其他外部资源需要网络。
 
+## 形态分析与词典来源
+
+本项目使用 **[kiwipiepy](https://github.com/bab2min/kiwipiepy)**（Kiwi 韩语形态分析器的 Python 接口）分析韩文，识别词干、助词、词尾及词性，并提供词语在原文中的位置，供转换逻辑匹配和保留原文结构。
+
+例如，处理 `경제는` 时，形态分析帮助识别 `경제` 与助词 `는`；再结合词典中的 `경제 → 經濟`，生成 `經濟는`。
+
+- **kiwipiepy**：负责韩语分词与形态分析，接入代码位于 [`app/services/tokenizer.py`](app/services/tokenizer.py)。
+- **韩国语基础词典**：提供汉字词源、同音词条、释义及例证等数据。
+- **本项目的转换逻辑**：结合分析结果与词典候选，判断替换范围并生成混写文本，代码位于 [`app/services/converter.py`](app/services/converter.py)。
+
+kiwipiepy 已列入 [`requirements.txt`](requirements.txt)，按下方步骤安装依赖即可。感谢 kiwipiepy / Kiwi 与韩国语基础词典为本项目提供基础工具和数据。
+
 ## 快速开始
 
 技术栈：Python、FastAPI、SQLite、kiwipiepy，以及原生 HTML / CSS / JavaScript。以下步骤请从项目根目录执行；本地使用 Python 3.12 验证。
