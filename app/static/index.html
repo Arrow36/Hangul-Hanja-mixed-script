@@ -82,6 +82,7 @@
         }
         .result-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
         .input-wrap { position:relative; }
+        .input-wrap textarea { padding-right:112px; }
         .input-actions { position:absolute; top:10px; right:10px; display:flex; gap:6px; z-index:2; }
         .input-actions button { background:rgba(255,255,255,.94); }
         .toolbar-note { display:none; margin-left:4px; color:#2e7d32; font-size:.82rem; }
@@ -896,14 +897,6 @@
             -webkit-tap-highlight-color: transparent;
         }
 
-        /* Input section header bar for clear button */
-        .input-header-bar {
-            display: flex;
-            justify-content: flex-end;
-            align-items: center;
-            min-height: 28px;
-            margin-bottom: 4px;
-        }
         .btn-clear {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
@@ -974,6 +967,29 @@
 
         /* Responsive Mobile */
         @media (max-width: 768px) {
+            body {
+                height: 100dvh;
+                min-height: 100svh;
+                overscroll-behavior: none;
+            }
+
+            header {
+                position: sticky;
+                top: 0;
+                flex-shrink: 0;
+            }
+
+            .main-container {
+                flex: 1 1 auto;
+                min-height: 0;
+            }
+
+            footer {
+                position: sticky;
+                bottom: 0;
+                flex-shrink: 0;
+            }
+
             header {
                 padding: 8px 10px;
                 gap: 6px;
@@ -1184,11 +1200,11 @@
     <div class="main-container">
         <div class="content-area">
             <div class="input-section">
-                <div class="input-header-bar">
-                    <button id="btn-clear" class="btn-clear">清空</button>
-                </div>
                 <div class="input-wrap">
                     <textarea id="text-input"></textarea>
+                    <div class="input-actions">
+                        <button id="btn-clear" class="btn-clear">清空</button>
+                    </div>
                 </div>
             </div>
 
@@ -1240,7 +1256,7 @@
             <span id="proc-time" class="footer-stat-item footer-time-item">—</span>
         </div>
         <div class="footer-links">
-            <a href="https://github.com/Arrow36" target="_blank" rel="noopener" class="footer-author-link">@Arrow36</a>
+            <a href="https://github.com/Arrow36/Hangul-Hanja-mixed-script" target="_blank" rel="noopener" class="footer-author-link">@Arrow36</a>
             <a id="dictionary-json-link" href="https://krdict.korean.go.kr/download/downloadPopup" target="_blank" rel="noopener" class="footer-dict-link">JSON 词典数据</a>
             <button id="btn-info-modal" class="btn-info-modal" aria-label="查看图例与词典信息" title="查看图例与词典信息">ⓘ</button>
         </div>
@@ -1281,6 +1297,31 @@
     <div id="toast">已复制</div>
 
     <script>
+        const SUPPORTED_UI_LANGUAGES = new Set([
+            'zh', 'ko', 'en', 'ja', 'fr', 'es', 'ru', 'vi', 'mn', 'ar', 'th', 'id'
+        ]);
+
+        function detectBrowserLanguage() {
+            const preferredLanguages = navigator.languages && navigator.languages.length
+                ? Array.from(navigator.languages)
+                : [navigator.language || ''];
+
+            for (const locale of preferredLanguages) {
+                const primaryLanguage = String(locale)
+                    .toLowerCase()
+                    .replace('_', '-')
+                    .split('-')[0];
+
+                if (SUPPORTED_UI_LANGUAGES.has(primaryLanguage)) {
+                    return primaryLanguage;
+                }
+            }
+
+            return 'zh';
+        }
+
+        const savedLanguage = localStorage.getItem('ui-language');
+
         const state = {
             inputText: '',
             segments: [],
@@ -1302,7 +1343,9 @@
             currentRequestedEntryId: null,
             entryRequestCounter: 0,
             dictDataDate: null,
-            language: localStorage.getItem('ui-language') || 'zh'
+            language: savedLanguage && SUPPORTED_UI_LANGUAGES.has(savedLanguage)
+                ? savedLanguage
+                : detectBrowserLanguage()
         };
 
         const UI = {
@@ -1828,7 +1871,7 @@
             btnShowSpaces.textContent = state.showSpaces ? t('hideSpaces') : t('showSpaces');
             updateHighlightState();
 
-            // Input placeholder must remain empty per specification
+            // Example text is inserted as editable content during initialization
             elInput.placeholder = '';
             
             document.getElementById('sidebar-title').textContent = t('dictionary');
@@ -2531,16 +2574,18 @@
             adjustFooterAndToolbarForSpace();
         });
 
-        // Initialize empty input & fetch data date
+        // Initialize editable example text and convert it immediately
         window.addEventListener('DOMContentLoaded', () => {
             applyLanguage();
             fetchDictVersion();
-            elInput.value = ''; 
-            state.inputText = '';
+            elInput.value = '나라의 말이 중국과 달라 문자와 서로 통하지 아니하므로';
+            state.inputText = elInput.value;
             state.segments = [];
             state.lastProcessingMs = null;
             renderResult();
+            elStatus.textContent = t('converting');
             updateFooterStats();
+            convertText(state.inputText);
         });
     </script>
 </body>
