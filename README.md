@@ -6,6 +6,8 @@
 
 A local web app for Hangul–Hanja mixed-script reading, with etymology, dictionary lookup, and homonym selection.
 
+体验网站：https://kr.103367.xyz/
+
 ![汉谚混写网页界面](docs/images/web-interface.png)
 
 ## 功能
