@@ -1,9 +1,12 @@
-# Hangul-Hanja Mixed Script
+# Hangul → Hanja Converter | 국한문혼용 변환기 | 汉谚混写转换器
 
-**汉谚混写 · 국한문혼용체**
+**Hangul-Hanja Mixed Script / 國漢文混用體 / 국한문혼용체**
+
+将现代韩文自动转换为汉字与谚文混写的汉谚混写转换器。# Hangul-Hanja Mixed Script
+Convert modern Korean Hangul text into Hangul–Hanja mixed script.
+한글 문장을 국한문혼용체로 변환하는 웹 기반 변환기입니다.
 
 将韩文转换为汉谚混写的本地网页应用，结合词源展示、逐词释义与同音词候选选择，让阅读和查词在同一页面完成。
-
 A local web app for Hangul–Hanja mixed-script reading, with etymology, dictionary lookup, and homonym selection.
 
 体验网站：https://kr.103367.xyz/
