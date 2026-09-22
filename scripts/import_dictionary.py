@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import defaultdict
+from contextlib import closing
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -124,138 +125,7 @@ def classify_origin(origin, written_form):
     return origin, 'unresolved', 0
 
 
-def create_schema(conn):
-    conn.executescript('''
-        PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=NORMAL;
-        PRAGMA cache_size=-64000;
-        PRAGMA foreign_keys=ON;
-        
-        CREATE TABLE IF NOT EXISTS import_metadata (
-            id INTEGER PRIMARY KEY,
-            source_filename TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
-            import_timestamp TEXT NOT NULL,
-            data_version TEXT,
-            total_entries INTEGER,
-            total_senses INTEGER,
-            total_examples INTEGER,
-            origin_entries INTEGER
-        );
-        
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY,
-            target_code INTEGER NOT NULL,
-            written_form TEXT NOT NULL,
-            variant TEXT,
-            homonym_number INTEGER,
-            lexical_unit TEXT,
-            part_of_speech TEXT,
-            origin_raw TEXT,
-            vocabulary_level TEXT,
-            annotation TEXT,
-            semantic_category TEXT,
-            subject_category TEXT,
-            raw_json TEXT NOT NULL
-        );
-        
-        CREATE TABLE IF NOT EXISTS senses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-            sense_number TEXT,
-            definition TEXT,
-            annotation TEXT,
-            syntactic_annotation TEXT,
-            syntactic_pattern TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS equivalents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sense_id INTEGER NOT NULL REFERENCES senses(id) ON DELETE CASCADE,
-            language TEXT,
-            lemma TEXT,
-            definition TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS sense_examples (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sense_id INTEGER NOT NULL REFERENCES senses(id) ON DELETE CASCADE,
-            group_index INTEGER NOT NULL DEFAULT 0,
-            order_index INTEGER NOT NULL DEFAULT 0,
-            example_type TEXT,
-            example TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS sense_relations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sense_id INTEGER NOT NULL REFERENCES senses(id) ON DELETE CASCADE,
-            target_entry_id TEXT,
-            target_lemma TEXT,
-            target_homonym_number TEXT,
-            relation_type TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS multimedia (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sense_id INTEGER NOT NULL REFERENCES senses(id) ON DELETE CASCADE,
-            label TEXT,
-            media_type TEXT,
-            url TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS word_forms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-            form_type TEXT,
-            written_form TEXT,
-            pronunciation TEXT,
-            sound_url TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS form_representations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            word_form_id INTEGER NOT NULL REFERENCES word_forms(id) ON DELETE CASCADE,
-            repr_type TEXT,
-            written_form TEXT,
-            pronunciation TEXT,
-            sound_url TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS related_forms (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-            target_entry_id TEXT,
-            relation_type TEXT,
-            written_form TEXT
-        );
-        
-        CREATE TABLE IF NOT EXISTS conversion_candidates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            written_form TEXT NOT NULL,
-            entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-            origin_raw TEXT,
-            replacement TEXT,
-            replacement_type TEXT,
-            is_reliable INTEGER NOT NULL DEFAULT 0
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_entries_written_form ON entries(written_form);
-        CREATE INDEX IF NOT EXISTS idx_entries_target_code ON entries(target_code);
-        CREATE INDEX IF NOT EXISTS idx_entries_pos ON entries(part_of_speech);
-        CREATE INDEX IF NOT EXISTS idx_entries_origin ON entries(origin_raw);
-        CREATE INDEX IF NOT EXISTS idx_senses_entry ON senses(entry_id);
-        CREATE INDEX IF NOT EXISTS idx_equiv_sense ON equivalents(sense_id);
-        CREATE INDEX IF NOT EXISTS idx_examples_sense ON sense_examples(sense_id);
-        CREATE INDEX IF NOT EXISTS idx_examples_group ON sense_examples(sense_id, group_index);
-        CREATE INDEX IF NOT EXISTS idx_relations_sense ON sense_relations(sense_id);
-        CREATE INDEX IF NOT EXISTS idx_relations_target ON sense_relations(target_entry_id);
-        CREATE INDEX IF NOT EXISTS idx_multimedia_sense ON multimedia(sense_id);
-        CREATE INDEX IF NOT EXISTS idx_wordforms_entry ON word_forms(entry_id);
-        CREATE INDEX IF NOT EXISTS idx_formrep_wf ON form_representations(word_form_id);
-        CREATE INDEX IF NOT EXISTS idx_relforms_entry ON related_forms(entry_id);
-        CREATE INDEX IF NOT EXISTS idx_candidates_wf ON conversion_candidates(written_form);
-        CREATE INDEX IF NOT EXISTS idx_candidates_entry ON conversion_candidates(entry_id);
-    ''')
+from app.schema import create_schema
 
 
 def import_entry(conn, entry, stats, id_tracker):
@@ -513,6 +383,7 @@ def main():
         'errors': 0,
     }
     
+    source_counts = {'entries': 0, 'senses': 0, 'examples': 0}
     id_tracker = {}
     import_start = datetime.now(timezone.utc).isoformat()
     import_error = None
@@ -532,6 +403,15 @@ def main():
                 
                 lexicon = data.get('LexicalResource', {}).get('Lexicon', {})
                 entries = ensure_list(lexicon.get('LexicalEntry', []))
+                if not entries:
+                    raise RuntimeError(f'No lexical entries in {filename}')
+                source_counts['entries'] += len(entries)
+                for source_entry in entries:
+                    source_senses = ensure_list(source_entry.get('Sense'))
+                    source_counts['senses'] += len(source_senses)
+                    for sense in source_senses:
+                        for example in ensure_list(sense.get('SenseExample')):
+                            source_counts['examples'] += sum(1 for feat in ensure_list(example.get('feat')) if feat.get('att') == 'example')
                 
                 conn.execute("BEGIN TRANSACTION")
                 try:
@@ -553,26 +433,19 @@ def main():
                     print(f"  FATAL error in {filename}: {e}")
                     raise
         
-        # Verify counts against reference benchmarks before recording metadata
-        if stats['entries'] != 56555:
-            raise RuntimeError(f"Entry count mismatch: expected 56555, got {stats['entries']}")
-        if stats['senses'] != 76833:
-            raise RuntimeError(f"Sense count mismatch: expected 76833, got {stats['senses']}")
-        if stats['examples'] != 657975:
-            raise RuntimeError(f"Example count mismatch: expected 657975, got {stats['examples']}")
-
-        # Validate dialogue examples preserved (e.g. 요리하다 entry 9471)
-        yori_dialogues = conn.execute('''
-            SELECT se.group_index, se.order_index, se.example_type, se.example 
-            FROM sense_examples se 
-            JOIN senses s ON se.sense_id = s.id 
-            WHERE s.entry_id = 9471 AND se.example_type = '대화'
-            ORDER BY se.group_index, se.order_index
-        ''').fetchall()
-        if len(yori_dialogues) < 4:
-            raise RuntimeError(f"Dialogue examples verification failed for 요리하다: got {len(yori_dialogues)}")
-
-        data_version = json_files[0].split('_')[-1].replace('.json', '') if json_files else ''
+        # Validate against this archive, rather than requiring an old snapshot's totals.
+        for key, table in [('entries', 'entries'), ('senses', 'senses'), ('examples', 'sense_examples')]:
+            actual = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+            if actual != source_counts[key] or actual != stats[key] or actual == 0:
+                raise RuntimeError(f'{key} mismatch: source={source_counts[key]}, imported={stats[key]}, database={actual}')
+        if stats['errors'] or stats['skipped']:
+            raise RuntimeError('Dictionary import contains skipped or failed entries')
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Dictionary foreign key check failed')
+        versions = {match.group(1) for name in json_files if (match := re.search(r'_(\d{8})\.json$', name))}
+        if len(versions) != 1:
+            raise RuntimeError('JSON files must identify one consistent snapshot date')
+        data_version = versions.pop()
         conn.execute('''
             INSERT INTO import_metadata (
                 source_filename, sha256, import_timestamp, data_version,
@@ -611,7 +484,8 @@ def main():
     if os.path.exists(db_path):
         import shutil
         backup_path = str(Path(db_path).with_suffix('.db.bak'))
-        shutil.copy2(db_path, backup_path)
+        with closing(sqlite3.connect(db_path)) as old, closing(sqlite3.connect(backup_path)) as backup:
+            old.backup(backup)
         print(f"Backed up previous database to: {backup_path}")
 
     os.replace(temp_db_path, db_path)
@@ -619,10 +493,10 @@ def main():
     print("\n" + "=" * 60)
     print("IMPORT COMPLETE")
     print("=" * 60)
-    print(f"Total entries:        {stats['entries']:>8}  (reference: 56,555)")
-    print(f"Total senses:         {stats['senses']:>8}  (reference: 76,833)")
-    print(f"Total examples:       {stats['examples']:>8}  (reference: 657,975)")
-    print(f"Entries with hanja:   {stats['origin_entries']:>8}  (reference: ~34,142)")
+    print(f"Total entries:        {stats['entries']:>8}")
+    print(f"Total senses:         {stats['senses']:>8}")
+    print(f"Total examples:       {stats['examples']:>8}")
+    print(f"Entries with hanja:   {stats['origin_entries']:>8}")
     print(f"Skipped:              {stats['skipped']:>8}")
     print(f"Errors:               {stats['errors']:>8}")
     print(f"Database: {db_path}")

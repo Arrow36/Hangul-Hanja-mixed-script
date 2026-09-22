@@ -1,9 +1,11 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict, Any
 
+MAX_TEXT_LENGTH = 20000
+
 class ConvertRequest(BaseModel):
-    text: str = Field(..., description="The text to convert")
-    request_id: Optional[str] = Field(None, description="Client-generated unique ID for this request to prevent stale responses")
+    text: str = Field(..., max_length=MAX_TEXT_LENGTH, description="The text to convert (up to 20,000 characters)")
+    request_id: Optional[str] = Field(None, max_length=128, description="Client-generated unique ID for this request to prevent stale responses")
 
     model_config = ConfigDict(
         json_schema_extra={

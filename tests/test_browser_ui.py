@@ -2,7 +2,7 @@
 """
 Real-browser UI tests using headless Microsoft Edge via Selenium.
 Verifies:
-1. Default empty state on initial page load (no convert request, blank textarea and result).
+1. Editable example on initial load, automatic conversion and explicit language path.
 2. Header title and language selector on the same line across 320px, 375px, 395px, 430px, and desktop.
 3. Structured two-row mobile toolbar layout with stable minmax(0, 1fr) buttons.
 4. Strictly scoped space button styling (text toggle only, no color change, no toolbar jumping).
@@ -65,34 +65,15 @@ def input_and_convert(driver, text="대한민국은 민주공화국이다."):
     wait_for_segments(driver)
 
 
-def test_01_page_load_empty_state_and_no_request(driver):
-    """Verify initial page load starts with empty textarea, blank result, and no conversion request."""
-    driver.get(BASE_URL)
-    assert "국한문혼용체" in driver.title
-
-    # Textarea must be empty with NO placeholder
-    textarea = driver.find_element(By.ID, "text-input")
-    assert textarea.get_attribute("value") == ""
-    assert not textarea.get_attribute("placeholder")
-
-    # Result area must be completely empty
-    result_area = driver.find_element(By.ID, "result-area")
-    assert result_area.text.strip() == ""
-    assert len(driver.find_elements(By.CSS_SELECTOR, "#result-area .align-pair, #result-area .seg")) == 0
-
-    # Status must be ready/0 chars/time dash
-    char_count = driver.find_element(By.ID, "char-count").text
-    assert "0" in char_count
-    proc_time = driver.find_element(By.ID, "proc-time").text
-    assert proc_time == "—"
-
-    # Author link
-    author_link = driver.find_element(By.CSS_SELECTOR, 'footer a[href="https://github.com/Arrow36"]')
-    assert author_link.text == "@Arrow36"
-
-    # Clear button is positioned above textarea in header bar
-    clear_btn = driver.find_element(By.ID, "btn-clear")
-    assert clear_btn.is_displayed()
+def test_01_page_load_example_and_language_path(driver):
+    """The editable example converts on load and the URL names its UI language."""
+    driver.get(BASE_URL + '/kr')
+    wait_for_segments(driver)
+    assert driver.find_element(By.ID, 'text-input').get_attribute('value')
+    assert driver.find_element(By.ID, 'result-area').text.strip()
+    assert driver.execute_script('return document.documentElement.lang') == 'ko'
+    assert driver.current_url.rstrip('/').endswith('/kr')
+    assert driver.find_element(By.CSS_SELECTOR, 'footer a[href="https://github.com/Arrow36"]').text == '@Arrow36'
 
 
 def test_02_header_same_line_mobile_viewports(driver):
@@ -301,6 +282,7 @@ def test_06_clear_button_behavior_and_no_overlap(driver):
 def test_07_language_synchronization_all_twelve_languages(driver):
     """Verify all 12 languages sync labels immediately and don't inject default text when empty."""
     driver.get(BASE_URL)
+    driver.find_element(By.ID, 'btn-clear').click()
     lang_select = Select(driver.find_element(By.ID, "language-select"))
 
     lang_checks = {

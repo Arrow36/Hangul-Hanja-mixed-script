@@ -6,14 +6,16 @@ Provides lookups, search, and candidate retrieval.
 import aiosqlite
 import json
 import re
+from collections import OrderedDict, defaultdict
 from typing import List, Optional, Dict, Tuple, Any
 
 
 class DictionaryService:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._candidate_cache: Dict[str, List[dict]] = {}
+        self._candidate_cache = OrderedDict()
         self._max_cache = 20000
+        self._stats = None
         self._collocations: Dict[Tuple[str, str], str] = {}
         self._cjk_re = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
 
@@ -40,6 +42,7 @@ class DictionaryService:
             async with db.execute(query) as cursor:
                 rows = await cursor.fetchall()
 
+            possibilities = defaultdict(set)
             for row in rows:
                 wf = row['written_form'].strip()
                 origin = row['origin_raw'].strip()
@@ -58,8 +61,9 @@ class DictionaryService:
                     for i, (w, w_orig) in enumerate(word_origins):
                         for j, (other_w, _) in enumerate(word_origins):
                             if i != j:
-                                self._collocations[(w, other_w)] = w_orig
+                                possibilities[(w, other_w)].add(w_orig)
 
+            self._collocations = {key: next(iter(values)) for key, values in possibilities.items() if len(values) == 1}
             return self._collocations
         finally:
             if close_db:
@@ -95,6 +99,7 @@ class DictionaryService:
     ) -> List[dict]:
         """Look up conversion candidates by written_form."""
         if written_form in self._candidate_cache:
+            self._candidate_cache.move_to_end(written_form)
             return self._candidate_cache[written_form]
 
         close_db = db is None
@@ -114,8 +119,7 @@ class DictionaryService:
             async with db.execute(query, (written_form,)) as cursor:
                 rows = await cursor.fetchall()
                 result = [dict(row) for row in rows]
-                if len(self._candidate_cache) < self._max_cache:
-                    self._candidate_cache[written_form] = result
+                self._cache_candidates(written_form, result)
                 return result
         finally:
             if close_db:
@@ -128,8 +132,9 @@ class DictionaryService:
         result: Dict[str, List[dict]] = {}
         missing = []
 
-        for wf in written_forms:
+        for wf in dict.fromkeys(written_forms):
             if wf in self._candidate_cache:
+                self._candidate_cache.move_to_end(wf)
                 result[wf] = self._candidate_cache[wf]
             else:
                 missing.append(wf)
@@ -164,8 +169,7 @@ class DictionaryService:
                         result.setdefault(wf, []).append(d)
 
             for wf in missing:
-                if len(self._candidate_cache) < self._max_cache:
-                    self._candidate_cache[wf] = result.get(wf, [])
+                self._cache_candidates(wf, result.get(wf, []))
 
             return result
         finally:
@@ -173,7 +177,7 @@ class DictionaryService:
                 await db.close()
 
     async def get_entry_detail(
-        self, entry_id: int, db: Optional[aiosqlite.Connection] = None
+        self, entry_id: int, db: Optional[aiosqlite.Connection] = None, *, include_raw: bool = False
     ) -> Optional[dict]:
         """Get full entry details including all children."""
         close_db = db is None
@@ -181,7 +185,10 @@ class DictionaryService:
             db = await self.get_connection()
         try:
             # Query entry by id or target_code
-            async with db.execute('SELECT * FROM entries WHERE id = ? OR target_code = ? LIMIT 1', (entry_id, entry_id)) as cursor:
+            fields = 'id, target_code, written_form, variant, homonym_number, lexical_unit, part_of_speech, origin_raw, vocabulary_level, annotation, semantic_category, subject_category'
+            if include_raw:
+                fields += ', raw_json'
+            async with db.execute(f'SELECT {fields} FROM entries WHERE id = ? OR target_code = ? ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, id LIMIT 1', (entry_id, entry_id, entry_id)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
@@ -202,12 +209,9 @@ class DictionaryService:
             ) as cursor:
                 word_forms = [dict(r) for r in await cursor.fetchall()]
 
+            representations = await self._load_children(db, 'form_representations', 'word_form_id', [wf['id'] for wf in word_forms])
             for wf in word_forms:
-                async with db.execute(
-                    'SELECT * FROM form_representations WHERE word_form_id = ? ORDER BY id',
-                    (wf['id'],)
-                ) as cursor:
-                    wf['sub_forms'] = [dict(r) for r in await cursor.fetchall()]
+                wf['sub_forms'] = representations.get(wf['id'], [])
             entry['word_forms'] = word_forms
 
             async with db.execute(
@@ -228,29 +232,34 @@ class DictionaryService:
         ) as cursor:
             senses = [dict(r) for r in await cursor.fetchall()]
 
-        for sense in senses:
-            sid = sense['id']
-            async with db.execute(
-                'SELECT * FROM equivalents WHERE sense_id = ? ORDER BY id', (sid,)
-            ) as cursor:
-                sense['equivalents'] = [dict(r) for r in await cursor.fetchall()]
-
-            async with db.execute(
-                'SELECT * FROM sense_examples WHERE sense_id = ? ORDER BY group_index ASC, order_index ASC, id ASC', (sid,)
-            ) as cursor:
-                sense['examples'] = [dict(r) for r in await cursor.fetchall()]
-
-            async with db.execute(
-                'SELECT * FROM sense_relations WHERE sense_id = ? ORDER BY id', (sid,)
-            ) as cursor:
-                sense['relations'] = [dict(r) for r in await cursor.fetchall()]
-
-            async with db.execute(
-                'SELECT * FROM multimedia WHERE sense_id = ? ORDER BY id', (sid,)
-            ) as cursor:
-                sense['multimedia'] = [dict(r) for r in await cursor.fetchall()]
+        sense_ids = [sense['id'] for sense in senses]
+        for table, key in [('equivalents', 'equivalents'), ('sense_examples', 'examples'), ('sense_relations', 'relations'), ('multimedia', 'multimedia')]:
+            order = 'group_index, order_index, id' if table == 'sense_examples' else 'id'
+            children = await self._load_children(db, table, 'sense_id', sense_ids, order)
+            for sense in senses:
+                sense[key] = children.get(sense['id'], [])
 
         return senses
+
+    async def _load_children(self, db, table, foreign_key, ids, order='id'):
+        # Identifiers are internal constants; values always use SQL parameters.
+        grouped = defaultdict(list)
+        for i in range(0, len(ids), 500):
+            batch = ids[i:i+500]
+            placeholders = ','.join('?' for _ in batch)
+            async with db.execute(f'SELECT * FROM {table} WHERE {foreign_key} IN ({placeholders}) ORDER BY {order}', batch) as cursor:
+                for row in await cursor.fetchall():
+                    grouped[row[foreign_key]].append(dict(row))
+        return grouped
+
+    async def get_entry_raw(self, entry_id):
+        db = await self.get_connection()
+        try:
+            async with db.execute('SELECT raw_json FROM entries WHERE id = ?', (entry_id,)) as cursor:
+                row = await cursor.fetchone()
+                return json.loads(row[0]) if row else None
+        finally:
+            await db.close()
 
     async def search_entries(
         self, query: str, search_type: str = 'written_form',
@@ -335,7 +344,9 @@ class DictionaryService:
     async def get_stats(
         self, db: Optional[aiosqlite.Connection] = None
     ) -> dict:
-        """Get database statistics."""
+        """Get database statistics (dictionary is immutable during a service run)."""
+        if self._stats is not None:
+            return self._stats
         close_db = db is None
         if close_db:
             db = await self.get_connection()
@@ -373,13 +384,22 @@ class DictionaryService:
                 stats['import_info'] = None
                 stats['entries_with_hanja_origin'] = None
 
+            self._stats = stats
             return stats
         finally:
             if close_db:
                 await db.close()
 
+    def _cache_candidates(self, form, candidates):
+        self._candidate_cache[form] = candidates
+        self._candidate_cache.move_to_end(form)
+        if len(self._candidate_cache) > self._max_cache:
+            self._candidate_cache.popitem(last=False)
+
     def invalidate_cache(self):
         self._candidate_cache.clear()
+        self._collocations.clear()
+        self._stats = None
 
     async def batch_lookup_origins(self, written_forms: List[str]) -> Dict[str, List[dict]]:
         """Return entry origins independently from conversion candidates."""
@@ -406,9 +426,11 @@ class DictionaryService:
         """Look up candidate details and origin info for candidate selection validation."""
         db = await self.get_connection()
         try:
-            entry = await self.get_entry_detail(entry_id, db)
-            if not entry:
+            async with db.execute('SELECT id, written_form, origin_raw FROM entries WHERE id = ?', (entry_id,)) as cursor:
+                row = await cursor.fetchone()
+            if not row:
                 return None
+            entry = dict(row)
             
             async with db.execute(
                 'SELECT * FROM conversion_candidates WHERE entry_id = ? ORDER BY is_reliable DESC LIMIT 1',

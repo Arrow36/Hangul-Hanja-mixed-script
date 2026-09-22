@@ -12,7 +12,7 @@ Regression test suite covering the 13 required verification criteria:
 10. Candidate selection synchronizes origin cache (기사 -> 記事)
 11. Single-pass origin return in /api/convert without per-word client enrichments
 12. Preserved dialogue structure with group_index and order_index for entries like 요리하다
-13. Database stats endpoint reporting total_examples == 657975
+13. Database stats endpoint reporting total_examples == 659075
 """
 
 import os
@@ -52,14 +52,14 @@ class TestRegressionFixed(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
 
-        self.assertEqual(data.get("code_version"), "2026.09.08.1-fixed")
+        self.assertEqual(data.get("code_version"), "2026.09.23.1")
         self.assertEqual(data.get("api_schema_version"), "2.1.0")
-        self.assertEqual(data.get("data_version"), "20260819")
+        self.assertEqual(data.get("data_version"), "20260919")
 
         stats = data.get("db_stats", {})
         self.assertEqual(stats.get("total_entries"), 56555)
         self.assertEqual(stats.get("total_senses"), 76833)
-        self.assertEqual(stats.get("total_examples"), 657975)
+        self.assertEqual(stats.get("total_examples"), 659075)
         self.assertGreater(stats.get("entries_with_hanja", 0), 30000)
 
     def test_02_origin_alignment_wihan(self):
@@ -309,7 +309,7 @@ class TestRegressionFixed(unittest.TestCase):
 
         self.assertEqual(stats.get("total_entries"), 56555)
         self.assertEqual(stats.get("total_senses"), 76833)
-        self.assertEqual(stats.get("total_examples"), 657975)
+        self.assertEqual(stats.get("total_examples"), 659075)
 
 
 if __name__ == "__main__":

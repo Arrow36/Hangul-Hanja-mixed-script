@@ -2,13 +2,14 @@
 End-to-end API testing script covering live HTTP endpoints against port 8000.
 """
 
+import os
 import sys
 import unittest
 import httpx
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-BASE_URL = 'http://127.0.0.1:8000'
+BASE_URL = os.environ.get('HANJA_BASE_URL', 'http://127.0.0.1:8000')
 
 
 def is_server_running():
@@ -26,7 +27,7 @@ class TestE2EApi(unittest.TestCase):
     def setUpClass(cls):
         if not is_server_running():
             raise unittest.SkipTest(f"Server is not running on {BASE_URL}")
-        cls.client = httpx.Client(base_url=BASE_URL, timeout=10.0)
+        cls.client = httpx.Client(base_url=BASE_URL, timeout=10.0, follow_redirects=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -39,17 +40,17 @@ class TestE2EApi(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         html = resp.text
         self.assertIn('<title>汉谚混写·국한문혼용체</title>', html)
-        self.assertTrue('align-container' in html or 'split-container' in html)
+        self.assertIn('/static/app.js', html)
 
     def test_02_version(self):
         """Test 2: Dynamic /api/version."""
         resp = self.client.get("/api/version")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
-        self.assertEqual(data["code_version"], "2026.09.08.1-fixed")
+        self.assertEqual(data["code_version"], "2026.09.23.1")
         self.assertEqual(data["api_schema_version"], "2.1.0")
-        self.assertEqual(data["data_version"], "20260819")
-        self.assertEqual(data["db_stats"]["total_examples"], 657975)
+        self.assertEqual(data["data_version"], "20260919")
+        self.assertEqual(data["db_stats"]["total_examples"], 659075)
 
     def test_03_stats(self):
         """Test 3: Database /api/stats."""
@@ -58,9 +59,9 @@ class TestE2EApi(unittest.TestCase):
         stats = resp.json()
         self.assertEqual(stats['total_entries'], 56555)
         self.assertEqual(stats['total_senses'], 76833)
-        self.assertEqual(stats['total_examples'], 657975)
+        self.assertEqual(stats['total_examples'], 659075)
         self.assertEqual(stats['entries_with_origin'], 36151)
-        self.assertEqual(stats['entries_with_hanja_origin'], 34142)
+        self.assertEqual(stats['entries_with_hanja_origin'], 34150)
 
     def test_04_convert_cases(self):
         """Test 4: Key conversion cases."""

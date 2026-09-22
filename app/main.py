@@ -9,14 +9,14 @@ import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db, get_db_path
 from app.schemas import (
-    ConvertRequest, ConvertResponse, ConvertSegment, SegmentCandidate,
+    MAX_TEXT_LENGTH, ConvertRequest, ConvertResponse, ConvertSegment, SegmentCandidate,
     EntryDetail, EntryBrief, LookupResponse, StatsResponse,
     SelectCandidateRequest, SelectCandidateResponse, VersionResponse,
     SenseDetail, EquivalentInfo, SenseExampleInfo, SenseRelationInfo,
@@ -26,6 +26,9 @@ from app.services.tokenizer import TokenizerService
 from app.services.dictionary import DictionaryService
 from app.services.converter import ConverterService
 from app.services.disambiguation import DisambiguationService
+from app.locales import resolve_language_path, LANGUAGE_PATHS
+
+CODE_VERSION = "2026.09.23.1"
 
 
 # --- App state ---
@@ -86,13 +89,23 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # --- Routes ---
 
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    """Serve the main page."""
-    index_file = STATIC_DIR / "index.html"
-    if index_file.exists():
-        return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Hanja Converter</h1><p>Static files not found.</p>")
+@app.get("/", include_in_schema=False)
+async def index(request: Request):
+    path = resolve_language_path(request.cookies.get("ui-language"), request.headers.get("accept-language", ""))
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/{path}{query}", status_code=307,
+                            headers={"Vary": "Accept-Language, Cookie", "Cache-Control": "private, no-store"})
+
+
+@app.get("/{language_path}", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/{language_path}/", response_class=HTMLResponse, include_in_schema=False)
+async def localized_index(language_path: str):
+    if language_path == "ko":
+        return RedirectResponse("/kr", status_code=308)
+    if language_path not in LANGUAGE_PATHS:
+        raise HTTPException(status_code=404, detail="Language not supported")
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/convert", response_model=ConvertResponse)
@@ -101,7 +114,8 @@ async def convert_text(req: ConvertRequest):
     if not converter:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    if not req.text.strip():
+    started = time.perf_counter()
+    if not req.text:
         return ConvertResponse(
             request_id=req.request_id or "default",
             segments=[],
@@ -156,6 +170,8 @@ async def convert_text(req: ConvertRequest):
                 written_form=c.get('written_form', ''),
                 origin_raw=c.get('origin_raw'),
                 replacement=c.get('replacement'),
+                replacement_type=c.get('replacement_type'),
+                is_reliable=bool(c.get('is_reliable', False)),
                 part_of_speech=c.get('part_of_speech'),
                 homonym_number=c.get('homonym_number'),
                 score=c.get('score', 0.0),
@@ -181,13 +197,13 @@ async def convert_text(req: ConvertRequest):
         request_id=req.request_id or "default",
         segments=response_segments,
         text_length=len(req.text),
-        processing_time_ms=round(elapsed, 2),
+        processing_time_ms=round((time.perf_counter() - started) * 1000, 2),
     )
 
 
 @app.get("/api/lookup", response_model=LookupResponse)
 async def lookup_entries(
-    query: str = Query(..., min_length=1),
+    query: str = Query(..., min_length=1, max_length=200),
     search_type: str = Query('written_form', pattern='^(written_form|origin|entry_id)$'),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -230,7 +246,7 @@ async def get_entry(entry_id: int, include_raw: bool = Query(False)):
     if not dictionary:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    entry = await dictionary.get_entry_detail(entry_id)
+    entry = await dictionary.get_entry_detail(entry_id, include_raw=include_raw)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
@@ -328,14 +344,24 @@ async def get_entry(entry_id: int, include_raw: bool = Query(False)):
     )
 
 
+@app.get("/api/entries/{entry_id}/raw")
+async def get_entry_raw(entry_id: int):
+    if not dictionary:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    raw = await dictionary.get_entry_raw(entry_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return raw
+
+
 @app.get("/api/version", response_model=VersionResponse)
 async def get_version():
     """Return backend code version, API schema version, data version, and DB statistics."""
     stats = await dictionary.get_stats() if dictionary else {}
     import_info = stats.get('import_info') or {}
-    data_ver = import_info.get('data_version', '20260819')
+    data_ver = import_info.get('data_version')
     return VersionResponse(
-        code_version="2026.09.08.1-fixed",
+        code_version=CODE_VERSION,
         api_schema_version="2.1.0",
         data_version=data_ver,
         db_stats={
@@ -400,12 +426,12 @@ async def get_stats():
 
 
 @app.get("/api/debug/tokenize")
-async def debug_tokenize(text: str = Query(...)):
+async def debug_tokenize(text: str = Query(..., max_length=MAX_TEXT_LENGTH)):
     """Debug endpoint: show tokenization results."""
     if not tokenizer or not tokenizer.is_available:
         raise HTTPException(status_code=503, detail="Tokenizer not available")
 
-    tokens = tokenizer.tokenize(text)
+    tokens = await tokenizer.tokenize_async(text)
     groups = tokenizer.build_word_groups(text, tokens)
 
     return {

@@ -309,17 +309,15 @@ class TestConverter(unittest.TestCase):
     def test_09_native_word_not_converted(self):
         """Test 9: 빠르게 (native word) not converted."""
         segments = self._get_segments('빠르게 달리다')
-        for s in segments:
-            if '빠르' in s.original:
-                self.assertNotIn('漢', s.display_text)
+        self.assertEqual(''.join(s.display_text for s in segments), '빠르게 달리다')
 
     def test_12_uncertain_kept(self):
         """Test 12: Ambiguous words kept as hangul."""
         segments = self._get_segments('발전')
         baljeon = [s for s in segments if s.original == '발전'][0]
         # With no context, 발전 might be ambiguous between 發展 and 發電
-        if baljeon.status == 'ambiguous':
-            self.assertEqual(baljeon.display_text, '발전')
+        self.assertEqual(baljeon.status, 'ambiguous')
+        self.assertEqual(baljeon.display_text, '발전')
 
     def test_13_conjugation_preserved(self):
         """Test 13: 발전하였다 preserves verb ending."""

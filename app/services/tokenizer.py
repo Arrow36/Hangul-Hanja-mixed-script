@@ -13,6 +13,7 @@ if sys.stdout is not None and hasattr(sys.stdout, 'reconfigure'):
 from dataclasses import dataclass
 from typing import List, Optional
 import re
+import asyncio
 
 @dataclass
 class MorphToken:
@@ -70,6 +71,7 @@ class TokenizerService:
     """Korean morphological analyzer wrapper."""
     
     def __init__(self):
+        self._tokenize_lock = asyncio.Semaphore(1)
         self._kiwi = None
         self._available = False
         self._init_error = None
@@ -92,6 +94,18 @@ class TokenizerService:
     def init_error(self) -> Optional[str]:
         return self._init_error
     
+    async def tokenize_async(self, text: str) -> List[MorphToken]:
+        # Serialize access to Kiwi and keep CPU work off the ASGI event loop.
+        async with self._tokenize_lock:
+            task = asyncio.create_task(asyncio.to_thread(self.tokenize, text))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Cancellation cannot stop a running native call. Keep the lock
+                # until Kiwi finishes before allowing another call to enter.
+                await task
+                raise
+
     def tokenize(self, text: str) -> List[MorphToken]:
         if not self._available:
             raise RuntimeError(f"Tokenizer not available: {self._init_error}")
@@ -156,7 +170,7 @@ class TokenizerService:
                 gap = text[prev_end:token.start]
                 
                 # If there's a space in the gap, start a new group
-                if ' ' in gap or '\n' in gap or '\t' in gap:
+                if any(ch.isspace() for ch in gap):
                     # Close current group
                     group_end = prev_end
                     groups.append(WordGroup(

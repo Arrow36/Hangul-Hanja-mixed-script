@@ -4,10 +4,11 @@ Benchmark script measuring first-run vs subsequent-run latency for:
 2. Long text: ~2,000 characters of authentic Korean editorial/academic text.
 """
 
+import os
 import time
 import httpx
 
-BASE_URL = 'http://127.0.0.1:8000'
+BASE_URL = os.environ.get('HANJA_BASE_URL', 'http://127.0.0.1:8000')
 
 SHORT_TEXT = "대한민국의 경제는 빠르게 발전하였다."
 

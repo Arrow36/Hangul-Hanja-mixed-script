@@ -11,7 +11,7 @@ Core principles:
 
 import time
 import re
-import unicodedata
+from bisect import bisect_right
 from typing import List, Dict, Optional, Tuple, Set
 from dataclasses import dataclass, field
 
@@ -34,6 +34,10 @@ class ConversionSegment:
     candidates: List[dict] = field(default_factory=list)
     selection_reason: Optional[str] = None
     origin: Optional[dict] = None
+
+
+MAX_COMPOUND_TOKENS = 8
+CONTEXT_RADIUS = 8
 
 
 class ConverterService:
@@ -67,14 +71,24 @@ class ConverterService:
             return [seg], elapsed
 
         # Step 1: Tokenize
-        tokens = self.tokenizer.tokenize(text)
+        tokens = await self.tokenizer.tokenize_async(text)
 
         # Step 2: Build word groups (whitespace-delimited units)
         groups = self.tokenizer.build_word_groups(text, tokens)
 
         # Step 3: Collect forms to look up
         forms_to_lookup = set()
-        sentence_context_forms = []
+        # Sentence boundaries include punctuation even without surrounding spaces.
+        boundaries = [m.end() for m in re.finditer(r'[.!?。！？\r\n]+', text)]
+        sentences = {}
+        for token in tokens:
+            if token.is_hangul and (token.is_noun or token.is_verb_stem):
+                sentences.setdefault(bisect_right(boundaries, token.start), []).append(token)
+        context_by_start = {}
+        for sentence in sentences.values():
+            for index, token in enumerate(sentence):
+                neighbors = sentence[max(0,index-CONTEXT_RADIUS):index+CONTEXT_RADIUS+1]
+                context_by_start[token.start] = list(dict.fromkeys(t.form for t in neighbors if t is not token))
 
         for group in groups:
             if not group.has_content:
@@ -82,7 +96,6 @@ class ConverterService:
             for token in group.tokens:
                 if token.is_hangul and (token.is_noun or token.is_verb_stem):
                     forms_to_lookup.add(token.form)
-                    sentence_context_forms.append(token.form)
 
                 # For verb stems ending in 하 (e.g. 위하 in 위하여/위한), look up with -다
                 if token.is_verb_stem and token.is_hangul:
@@ -98,22 +111,14 @@ class ConverterService:
             # Intra-word compound candidate forms (e.g. 문화적, 국제화)
             if len(group.tokens) > 1:
                 for start_t in range(len(group.tokens)):
-                    for end_t in range(start_t + 2, len(group.tokens) + 1):
+                    for end_t in range(start_t + 2, min(len(group.tokens), start_t + MAX_COMPOUND_TOKENS) + 1):
                         sub = group.tokens[start_t:end_t]
-                        if any(t.is_particle for t in sub):
+                        if any(t.is_particle or t.is_punct for t in sub):
                             continue
                         span_orig = text[sub[0].start : sub[-1].start + sub[-1].length]
                         forms_to_lookup.add(span_orig)
                         span_form = "".join(t.form for t in sub)
                         forms_to_lookup.add(span_form)
-
-        # Multi-word compound check (e.g. 경제 발전)
-        content_words = [g.content_form for g in groups if g.has_content and g.content_form]
-        for i in range(len(content_words) - 1):
-            w1 = content_words[i]
-            w2 = content_words[i + 1]
-            if w1 and w2:
-                forms_to_lookup.add(f"{w1} {w2}")
 
         # Step 4: Batch lookup candidates from dictionary
         if forms_to_lookup:
@@ -141,7 +146,7 @@ class ConverterService:
                 continue
 
             group_segments = self._process_word_group(
-                text, group, candidates_map, segment_id, sentence_context_forms
+                text, group, candidates_map, segment_id, context_by_start
             )
             segments.extend(group_segments)
             segment_id += len(group_segments)
@@ -158,7 +163,7 @@ class ConverterService:
         group: WordGroup,
         candidates_map: Dict[str, List[dict]],
         start_id: int,
-        sentence_context: List[str],
+        context_by_start: Dict[int, List[str]],
     ) -> List[ConversionSegment]:
         segments = []
         seg_id = start_id
@@ -169,6 +174,7 @@ class ConverterService:
 
         while i < num_tokens:
             token = group.tokens[i]
+            sentence_context = context_by_start.get(token.start, [])
 
             # Handle inter-token gaps
             if token.start > processed_end:
@@ -195,10 +201,10 @@ class ConverterService:
             # (e.g., 문화(NNG) + 적(XSN) -> 문화적; 국제(NNG) + 화(XSN) -> 국제화)
             # -------------------------------------------------------------
             compound_matched = False
-            for j in range(num_tokens, i + 1, -1):
+            for j in range(min(num_tokens, i + MAX_COMPOUND_TOKENS), i + 1, -1):
                 sub_tokens = group.tokens[i:j]
                 # Boundary check: do not cross into particles (J*)
-                if any(t.is_particle for t in sub_tokens):
+                if any(t.is_particle or t.is_punct for t in sub_tokens):
                     continue
 
                 span_start = sub_tokens[0].start

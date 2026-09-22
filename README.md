@@ -64,14 +64,14 @@ macOS / Linux 激活虚拟环境时使用 `source .venv/bin/activate`。
 
 数据来源为韩国国立国语院的 [한국어기초사전（韩国语基础词典）](https://krdict.korean.go.kr/)。请从官方获取完整 JSON 下载包，保留 ZIP 格式，无需手工解压。
 
-**当前导入器针对 2026-08-19 完整 JSON 快照进行严格校验。** 其他日期的数据可能因词条数量或结构变化而导入失败，需要先调整导入校验并验证兼容性。
+**当前已验证 2026-09-19 完整 JSON 快照。** 导入器逐份统计原始 JSON 的词条、义项和例证数量，与写入后的数据库核对，并执行外键和 SQLite 完整性校验。不同日期的数据必须保持兼容结构；无须再修改写死的旧版数量。快照校验和与统计见 [`docs/dictionary-snapshot.json`](docs/dictionary-snapshot.json)。
 
 ```powershell
-python scripts/inspect_dictionary.py "path/to/전체 내려받기_한국어기초사전_json_20260819.zip"
-python scripts/import_dictionary.py "path/to/전체 내려받기_한국어기초사전_json_20260819.zip"
+python scripts/inspect_dictionary.py "path/to/전체 내려받기_한국어기초사전_json_20260919.zip"
+python scripts/import_dictionary.py "path/to/전체 내려받기_한국어기초사전_json_20260919.zip"
 ```
 
-将示例路径替换为实际文件路径。导入后的数据库默认为项目根目录的 `hanja_dict.db`。当前快照的参考数量：56,555 个词条、76,833 个义项、657,975 条例证记录，以及 34,142 个含汉字词源的词条。例证记录包括短语、句子、对话等，并非全部是独立例句。
+将示例路径替换为实际文件路径。导入后的数据库默认为项目根目录的 `hanja_dict.db`。当前快照的参考数量：56,555 个词条、76,833 个义项、659,075 条例证记录，以及 34,150 个含汉字词源的词条。例证记录包括短语、句子、对话等，并非全部是独立例句。
 
 导入器逐个读取 ZIP 中的 JSON，保留原始词条数据，完成校验后替换数据库，并为原数据库创建备份。重新导入前请停止正在运行的服务。
 
@@ -83,7 +83,22 @@ python scripts/import_dictionary.py "path/to/전체 내려받기_한국어기초
 python run.py
 ```
 
-打开 <http://127.0.0.1:8000/>。默认启动器绑定本机地址，并启用开发热重载。API 文档位于 <http://127.0.0.1:8000/docs>。
+打开 <http://127.0.0.1:8000/>。默认启动器绑定本机地址，并启用开发热重载。API 文档位于 <http://127.0.0.1:8000/docs>。数据库缺失、为空或结构不兼容时，启动会给出导入提示，不会创建一个无法查询的空库。
+
+## 语言路径
+
+访问 `/` 时优先采用上次手动选择的语言 Cookie，否则按浏览器 `Accept-Language`（含权重）跳转；不支持的语言回退到简体中文。语言依据浏览器偏好，不依据国籍或 IP 地址。
+
+| 界面 | 路径 | 界面 | 路径 |
+| --- | --- | --- | --- |
+| 简体中文 | `/zh` | 한국어 | `/kr` |
+| English | `/en` | 日本語 | `/ja` |
+| Français | `/fr` | Español | `/es` |
+| Русский | `/ru` | Tiếng Việt | `/vi` |
+| Монгол | `/mn` | العربية | `/ar` |
+| ไทย | `/th` | Bahasa Indonesia | `/id` |
+
+直接访问语言路径时以路径为准，`/ko` 重定向到 `/kr`。页面内切换语言会同步更新地址，保留输入、转换结果和 URL 查询参数；支持浏览器前进/后退。韩语的 HTML 语言标记仍为标准代码 `ko`。
 
 ## API
 
@@ -93,6 +108,7 @@ python run.py
 | POST | `/api/select-candidate` | 验证候选并生成替换文本 |
 | GET | `/api/lookup` | 按词形、词源或词条 ID 查词 |
 | GET | `/api/entries/{entry_id}` | 获取词条详情，`include_raw=true` 返回原始数据 |
+| GET | `/api/entries/{entry_id}/raw` | 按需获取完整原始 JSON |
 | GET | `/api/version` | 查看版本与数据信息 |
 | GET | `/api/stats` | 查看词典统计 |
 | GET | `/api/debug/tokenize` | 查看形态分析结果 |
@@ -106,23 +122,32 @@ python run.py
 }
 ```
 
-完整参数与响应格式以运行服务后的 `/docs` 为准。
+单次转换最多 20,000 个字符。消歧使用同一句内前后最多 8 个内容词，跨句或跨段的词不会影响当前候选。完整参数与响应格式以运行服务后的 `/docs` 为准。
 
 ## 开发与测试
 
-先完成词典导入，再安装测试依赖并运行集成与回归测试：
+无需下载词典即可运行核心测试和 JavaScript 请求竞态测试（Node.js 22+）：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m unittest tests.test_core tests.test_integration.TestTokenizer
+node tests/test_frontend.cjs
+```
+
+GitHub Actions 自动执行上述测试。导入当前词典后，再运行完整集成与回归测试：
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 python -m unittest tests.test_integration tests.test_regression_fixed
 ```
 
-`tests/test_e2e_api.py` 用于运行中服务的 API 检查；`tests/test_browser_ui.py` 为可选浏览器测试，需要额外安装 Selenium，并按测试文件配置本地 Edge 驱动。仓库不提供驱动二进制文件。
+`tests/test_e2e_api.py` 用于运行中服务的 API 检查，可通过 `HANJA_BASE_URL` 指定服务地址；`tests/test_browser_ui.py` 为可选浏览器测试，需要额外安装 Selenium，并按测试文件配置本地 Edge 驱动。仓库不提供驱动二进制文件。
 
 ```text
 app/                     FastAPI、数据访问、转换逻辑与网页
   services/              形态分析、词典查询、转换及消歧
-  static/                页面和分类翻译资源
+  static/                页面、独立 CSS/JS、语言路径和分类翻译资源
+  schema.py              导入器与启动校验共用的数据库结构
 scripts/                 词典检查、导入、分类资源生成及验证工具
 tests/                   集成、回归、API 与浏览器测试
 run.py                   本地开发启动入口
